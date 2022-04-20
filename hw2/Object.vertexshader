@@ -1,0 +1,41 @@
+
+#version 330 core
+// Input vertex data, different for all executions of this shader.
+layout(location = 0) in vec3 vertexPosition_modelspace;
+layout(location = 1) in vec3 position;
+layout(location = 2) in vec3 vertexColor;
+layout(location = 3) in vec4 quat;
+
+// Output data ; will be interpolated for each fragment.
+out vec3 fragmentColor;
+
+// Values that stay constant for the whole mesh.
+
+uniform mat4 MVP; // Model-View-Projection matrix, but without the Model
+
+// Quaternion multiplication
+// http://mathworld.wolfram.com/Quaternion.html
+vec4 qmul(vec4 q1, vec4 q2) {
+	return vec4(
+		q2.xyz * q1.w + q1.xyz * q2.w + cross(q1.xyz, q2.xyz),
+		q1.w * q2.w - dot(q1.xyz, q2.xyz)
+	);
+}
+
+// Vector rotation with a quaternion
+vec3 rotate_vector(vec3 v, vec4 r) {
+	vec4 r_c = r * vec4(-1, -1, -1, 1);
+	return qmul(r, qmul(vec4(v, 0), r_c)).xyz;
+}
+
+void main()
+{
+    vec3 vertex_rot = rotate_vector(vertexPosition_modelspace, quat);
+	vec3 vertex_pos = position + vertex_rot;
+
+	// Output position of the vertex
+	gl_Position = MVP * vec4(vertex_pos, 1.0f);
+
+	fragmentColor = vertexColor;
+}
+
