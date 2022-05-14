@@ -5,6 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include <string> 
 
 // Include GLEW
 #include <GL/glew.h>
@@ -22,6 +23,7 @@ using namespace glm;
 #include <common/controls.hpp>
 #include <common/objloader.hpp>
 #include <common/texture.hpp>
+#include <common/text2D.hpp>
 
 # define M_PI 3.14159265358979323846  /* pi */
 
@@ -63,7 +65,7 @@ std::vector<Object> ObjectsContainer;
 
 void InstantiateObject() {
 	float x_p = rand() % (MaxDistance - MinDistance + 1) + MinDistance;
-	float y_p = rand() % (MaxDistance - MinDistance + 1) + MinDistance;
+	float y_p = rand() % MaxDistance;
 	float z_p = rand() % (MaxDistance - MinDistance + 1) + MinDistance;
 
 	vec3 pos(x_p, 0, z_p);
@@ -83,11 +85,15 @@ struct Fireball {
 	float speed;
 	float size;
 	bool is_alive;
+	bool explode;
+	float coeff;
 
 	Fireball(vec3 _pos, vec3 _dir) : pos(_pos), dir(_dir) {
 		is_alive = true;
+		explode = false;
 		speed = 10.0f;
 		size = 1.0f;
+		coeff = 0.0f;
 	}
 };
 
@@ -115,6 +121,9 @@ void CheckCollision() {
 	for (Fireball& fireball : FireballsContainer) {
 		for (Object& object : ObjectsContainer) {
 			float dist = distance(object.pos, fireball.pos);
+			if (dist <= object.size + fireball.size + 1) {
+				fireball.explode = true;
+			}
 			if (dist <= object.size + fireball.size) {
 				fireball.is_alive = false;
 				object.is_alive = false;
@@ -172,6 +181,7 @@ int main(void)
 
 	// Ensure we can capture the escape key being pressed below
 	glfwSetInputMode(window, GLFW_STICKY_KEYS, GL_TRUE);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
 
 	// Dark blue background
 	glClearColor(0.0f, 0.0f, 0.4f, 0.0f);
@@ -188,21 +198,46 @@ int main(void)
 	// Create and compile our GLSL program from the shaders
 	GLuint programObject = LoadShaders("Object.vertexshader", "Object.fragmentshader");
 	GLuint programFire = LoadShaders("Fireball.vertexshader", "Fireball.fragmentshader");
+	GLuint programID = LoadShaders("TransformVertexShader.vertexshader", "TextureFragmentShaderLOD.fragmentshader");
+	GLuint programIDSky = LoadShaders("TransformVertexShader.vertexshader", "TextureFragmentShaderLOD.fragmentshader");
 
 	// Get a handle for our "MVP" uniform
 	GLuint MatrixObject = glGetUniformLocation(programObject, "MVP");
 	GLuint MatrixFire = glGetUniformLocation(programFire, "MVP");
+	GLuint MatrixID = glGetUniformLocation(programID, "MVP");
+	GLuint MatrixIDSky = glGetUniformLocation(programIDSky, "MVP");
 
 	// Get a handle for our "myTextureSampler" uniform
 	GLuint TextureID = glGetUniformLocation(programFire, "myTextureSampler");
+	GLuint TextureFloorID = glGetUniformLocation(programID, "myTextureSamplerFloor");
+	GLuint TextureSkyID = glGetUniformLocation(programIDSky, "myTextureSamplerSky");
+
 
 	GLuint Texture = loadDDS("fire.DDS");
+	GLuint TextureFloor = loadDDS("floor.DDS");
+	GLuint TextureSky = loadDDS("sky.DDS");
 
 	// Read our .obj file
 	std::vector<glm::vec3> vertices;
 	std::vector<glm::vec2> uvs;
 	std::vector<glm::vec3> normals; // Won't be used at the moment.
+	std::vector<glm::vec3> normals_fireball;
 	bool res = loadOBJ("sphere.obj", vertices, uvs, normals);
+	for (vec3 n : normals) {
+		float rand_ = rand() % 10;
+		vec3 new_n = vec3(n) * rand_;
+		normals_fireball.push_back(new_n);
+	}
+
+	std::vector<glm::vec3> vertices_floor;
+	std::vector<glm::vec2> uvs_floor;
+	std::vector<glm::vec3> normals_floor; // Won't be used at the moment.
+	bool res1 = loadOBJ("floor.obj", vertices_floor, uvs_floor, normals_floor);
+
+	std::vector<glm::vec3> vertices_sky;
+	std::vector<glm::vec2> uvs_sky;
+	std::vector<glm::vec3> normals_sky; // Won't be used at the moment.
+	bool res2 = loadOBJ("sky.obj", vertices_sky, uvs_sky, normals_sky);
 
 	// Our vertices. Tree consecutive floats give a 3D vertex; Three consecutive vertices give a triangle.
 	// A cube has 6 faces with 2 triangles each, so this makes 6*2=12 triangles, and 12*3 vertices
@@ -274,6 +309,7 @@ int main(void)
 
 
 	static std::vector<vec3> g_fireball_position_data(MaxFireballs);
+	static std::vector<float> g_fireball_coeff_data(MaxFireballs);
 
 	GLuint fireball_vertex_buffer;
 	glGenBuffers(1, &fireball_vertex_buffer);
@@ -285,26 +321,105 @@ int main(void)
 	glBindBuffer(GL_ARRAY_BUFFER, fireball_position_buffer);
 	glBufferData(GL_ARRAY_BUFFER, MaxFireballs * sizeof(vec3), nullptr, GL_STREAM_DRAW);
 
+
+	GLuint fireball_coeff_buffer;
+	glGenBuffers(1, &fireball_coeff_buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, fireball_coeff_buffer);
+	glBufferData(GL_ARRAY_BUFFER, MaxFireballs * sizeof(float), nullptr, GL_STREAM_DRAW);
+
 	GLuint fireball_uvbuffer;
 	glGenBuffers(1, &fireball_uvbuffer);
 	glBindBuffer(GL_ARRAY_BUFFER, fireball_uvbuffer);
 	glBufferData(GL_ARRAY_BUFFER, uvs.size() * sizeof(vec2), &uvs[0], GL_STATIC_DRAW);
 
+	GLuint fireball_normal_buffer;
+	glGenBuffers(1, &fireball_normal_buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, fireball_normal_buffer);
+	glBufferData(GL_ARRAY_BUFFER, normals_fireball.size() * sizeof(vec3), &normals_fireball[0], GL_STATIC_DRAW);
+
+	GLuint vertexbuffer_floor;
+	glGenBuffers(1, &vertexbuffer_floor);
+	glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer_floor);
+	glBufferData(GL_ARRAY_BUFFER, vertices_floor.size() * sizeof(glm::vec3), &vertices_floor[0], GL_STATIC_DRAW);
+
+	GLuint uvbuffer_floor;
+	glGenBuffers(1, &uvbuffer_floor);
+	glBindBuffer(GL_ARRAY_BUFFER, uvbuffer_floor);
+	glBufferData(GL_ARRAY_BUFFER, uvs_floor.size() * sizeof(glm::vec2), &uvs_floor[0], GL_STATIC_DRAW);
+
+	GLuint vertexbuffer_sky;
+	glGenBuffers(1, &vertexbuffer_sky);
+	glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer_sky);
+	glBufferData(GL_ARRAY_BUFFER, vertices_sky.size() * sizeof(glm::vec3), &vertices_sky[0], GL_STATIC_DRAW);
+
+	GLuint uvbuffer_sky;
+	glGenBuffers(1, &uvbuffer_sky);
+	glBindBuffer(GL_ARRAY_BUFFER, uvbuffer_sky);
+	glBufferData(GL_ARRAY_BUFFER, uvs_sky.size() * sizeof(glm::vec2), &uvs_sky[0], GL_STATIC_DRAW);
+
 	double lastTime = glfwGetTime();
 	double createTime = 2.0f;
-	double shootTime = 0.0f;
+	double showInfoTime = 2.0f;
+
+	double globalTime = glfwGetTime();
+	double delta = 0.025f;
+
+	bool mouse_left_pressed = false;
+	bool mouse_left_released = true;
+	bool mouse_right_pressed = false;
+	bool mouse_right_released = true;
+	bool mouse_mid_pressed = false;
+	bool mouse_mid_released = true;
+
+	double showTime = 0.0f;
+	double delay = 0.05f;
+
+	initText2D("Holstein.DDS");
 	do {
+		double currentGlobal = glfwGetTime();
+		double deltaG = currentGlobal - globalTime;
+		if (showInfoTime <= 5.0f) {
+			showInfoTime += deltaG;
+			// printText2D("SHOOT - middle click", 0, 550, 20);
+		}
+		globalTime = currentGlobal;
+		showTime += deltaG;
+
+		if (showTime <= delay) {
+			continue;
+		}
+
+		showTime = 0.0f;
+
+		if (mouse_left_released && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+			mouse_left_pressed = true;
+			mouse_left_released = false;
+		}
+
+		if (mouse_left_pressed && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE) {
+			mouse_left_pressed = false;
+			mouse_left_released = true;
+			delay += 0.05f;
+		}
+		if (mouse_right_released && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+			mouse_right_pressed = true;
+			mouse_right_released = false;
+		}
+
+		if (mouse_right_pressed && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE) {
+			mouse_right_pressed = false;
+			mouse_right_released = true;
+			if (delay >= 0.05f) {
+				delay -= 0.05f;
+			}
+		}
 		// Clear the screen
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		RemoveFarFireballs();
 		CheckCollision();
 
-		double currentTime = glfwGetTime();
-		double delta = currentTime - lastTime;
-		lastTime = currentTime;
 		createTime += delta;
-		shootTime += delta;
 
 		if (createTime >= 3.0f && ObjectsContainer.size() <= MaxObjects) {
 			InstantiateObject();
@@ -312,10 +427,16 @@ int main(void)
 			createTime = 0.0f;
 		}
 
-		if (shootTime >= 2.0f && FireballsContainer.size() <= MaxFireballs) {
+		if (mouse_mid_released && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
+			mouse_mid_pressed = true;
+			mouse_mid_released = false;
+		}
+
+		if (mouse_mid_pressed && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_RELEASE) {
+			mouse_mid_pressed = false;
+			mouse_mid_released = true;
 			std::cout << "shoot\n";
 			InstantiateFireball();
-			shootTime = 0.0f;
 		}
 
 		computeMatricesFromInputs();
@@ -408,11 +529,24 @@ int main(void)
 			Fireball& fireball = FireballsContainer[i];
 			fireball.pos += fireball.dir * fireball.speed * (float)delta;
 			g_fireball_position_data[i] = fireball.pos;
+			if (fireball.explode) {
+				if (fireball.coeff < 1.0f) {
+					fireball.coeff += 0.1f;
+				}
+				g_fireball_coeff_data[i] = fireball.coeff;
+			}
+			else {
+				g_fireball_coeff_data[i] = 0;
+			}
 		}
 
 		glBindBuffer(GL_ARRAY_BUFFER, fireball_position_buffer);
 		glBufferData(GL_ARRAY_BUFFER, MaxFireballs * sizeof(vec3), nullptr, GL_STREAM_DRAW);
 		glBufferSubData(GL_ARRAY_BUFFER, 0, FireballsContainer.size() * sizeof(vec3), &g_fireball_position_data[0]);
+
+		glBindBuffer(GL_ARRAY_BUFFER, fireball_coeff_buffer);
+		glBufferData(GL_ARRAY_BUFFER, MaxFireballs * sizeof(float), nullptr, GL_STREAM_DRAW);
+		glBufferSubData(GL_ARRAY_BUFFER, 0, FireballsContainer.size() * sizeof(float), &g_fireball_coeff_data[0]);
 
 
 		glUseProgram(programFire);
@@ -460,15 +594,141 @@ int main(void)
 			(void*)0            // array buffer offset
 		);
 
+		// 4 attribute buffer : fireball_normal_buffer
+		glEnableVertexAttribArray(3);
+		glBindBuffer(GL_ARRAY_BUFFER, fireball_normal_buffer);
+		glVertexAttribPointer(
+			3,                  // attribute
+			3,                  // size
+			GL_FLOAT,           // type
+			GL_FALSE,           // normalized?
+			0,                  // stride
+			(void*)0            // array buffer offset
+		);
+
+		// 5 attribute buffer : fireball_coeff_buffer
+		glEnableVertexAttribArray(4);
+		glBindBuffer(GL_ARRAY_BUFFER, fireball_coeff_buffer);
+		glVertexAttribPointer(
+			4,                  // attribute
+			1,                  // size
+			GL_FLOAT,           // type
+			GL_FALSE,           // normalized?
+			0,                  // stride
+			(void*)0            // array buffer offset
+		);
+
 		glVertexAttribDivisor(0, 0);
 		glVertexAttribDivisor(1, 0);
 		glVertexAttribDivisor(2, 1);
+		glVertexAttribDivisor(3, 0);
+		glVertexAttribDivisor(4, 1);
 
 		glDrawArraysInstanced(GL_TRIANGLES, 0, vertices.size(), FireballsContainer.size());
 
 		glDisableVertexAttribArray(0);
 		glDisableVertexAttribArray(1);
 		glDisableVertexAttribArray(2);
+		glDisableVertexAttribArray(3);
+		glDisableVertexAttribArray(4);
+
+		// Use our shader
+		glUseProgram(programID);
+
+		// Send our transformation to the currently bound shader, 
+		// in the "MVP" uniform
+		glUniformMatrix4fv(MatrixID, 1, GL_FALSE, &MVP[0][0]);
+
+		// Bind our texture in Texture Unit 0
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, TextureFloor);
+		// Set our "myTextureSampler" sampler to use Texture Unit 0
+		glUniform1i(TextureFloorID, 0);
+
+		// 1rst attribute buffer : vertices
+		glEnableVertexAttribArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer_floor);
+		glVertexAttribPointer(
+			0,                  // attribute
+			3,                  // size
+			GL_FLOAT,           // type
+			GL_FALSE,           // normalized?
+			0,                  // stride
+			(void*)0            // array buffer offset
+		);
+
+		// 2nd attribute buffer : UVs
+		glEnableVertexAttribArray(1);
+		glBindBuffer(GL_ARRAY_BUFFER, uvbuffer_floor);
+		glVertexAttribPointer(
+			1,                                // attribute
+			2,                                // size
+			GL_FLOAT,                         // type
+			GL_FALSE,                         // normalized?
+			0,                                // stride
+			(void*)0                          // array buffer offset
+		);
+
+		// Draw the triangles !
+		glDrawArrays(GL_TRIANGLES, 0, vertices_floor.size());
+
+		glDisableVertexAttribArray(0);
+		glDisableVertexAttribArray(1);
+
+		// Use our shader
+		glUseProgram(programIDSky);
+
+		// Send our transformation to the currently bound shader, 
+		// in the "MVP" uniform
+		glUniformMatrix4fv(MatrixIDSky, 1, GL_FALSE, &MVP[0][0]);
+
+		// Bind our texture in Texture Unit 0
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, TextureSky);
+		// Set our "myTextureSampler" sampler to use Texture Unit 0
+		glUniform1i(TextureSkyID, 0);
+
+		// 1rst attribute buffer : vertices
+		glEnableVertexAttribArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, vertexbuffer_sky);
+		glVertexAttribPointer(
+			0,                  // attribute
+			3,                  // size
+			GL_FLOAT,           // type
+			GL_FALSE,           // normalized?
+			0,                  // stride
+			(void*)0            // array buffer offset
+		);
+
+		// 2nd attribute buffer : UVs
+		glEnableVertexAttribArray(1);
+		glBindBuffer(GL_ARRAY_BUFFER, uvbuffer_sky);
+		glVertexAttribPointer(
+			1,                                // attribute
+			2,                                // size
+			GL_FLOAT,                         // type
+			GL_FALSE,                         // normalized?
+			0,                                // stride
+			(void*)0                          // array buffer offset
+		);
+
+		// Draw the triangles !
+		glDrawArrays(GL_TRIANGLES, 0, vertices_sky.size());
+
+		glDisableVertexAttribArray(0);
+		glDisableVertexAttribArray(1);
+
+		printText2D(".", 400, 300, 60);
+		std::string numberEnemies = std::to_string(ObjectsContainer.size());
+		printText2D("Num of enemies:", 10, 100, 14);
+		printText2D(numberEnemies.c_str(), 80, 50, 30);
+
+		if (showInfoTime <= 5.0f) {
+			showInfoTime += deltaG;
+			printText2D("SHOOT-middle click", 0, 550, 20);
+			printText2D("FASTER-right click", 0, 500, 20);
+			printText2D("SLOWER-left click", 0, 450, 20);
+		}
 
 		// Swap buffers
 		glfwSwapBuffers(window);
@@ -486,14 +746,22 @@ int main(void)
 	glDeleteBuffers(1, &fireball_vertex_buffer);
 	glDeleteBuffers(1, &fireball_uvbuffer);
 	glDeleteBuffers(1, &fireball_position_buffer);
+	glDeleteBuffers(1, &fireball_normal_buffer);
+	glDeleteBuffers(1, &fireball_coeff_buffer);
 	glDeleteProgram(programObject);
 	glDeleteProgram(programFire);
+	glDeleteProgram(programID);
+	glDeleteProgram(programIDSky);
+
 	glDeleteTextures(1, &Texture);
+	glDeleteTextures(1, &TextureFloor);
+	glDeleteTextures(1, &TextureSky);
+
 	glDeleteVertexArrays(1, &VertexArrayID);
 
+	cleanupText2D();
 	// Close OpenGL window and terminate GLFW
 	glfwTerminate();
 
 	return 0;
 }
-
